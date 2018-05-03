@@ -40,6 +40,10 @@ module Axlsx
         nil
       end
 
+      def reopen
+        nil
+      end
+
     end
 
   end
