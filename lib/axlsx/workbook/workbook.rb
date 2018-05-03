@@ -5,13 +5,10 @@ require 'axlsx/workbook/worksheet/auto_filter/auto_filter.rb'
 require 'axlsx/workbook/worksheet/date_time_converter.rb'
 require 'axlsx/workbook/worksheet/protected_range.rb'
 require 'axlsx/workbook/worksheet/protected_ranges.rb'
-require 'axlsx/workbook/worksheet/rich_text_run'
-require 'axlsx/workbook/worksheet/rich_text'
 require 'axlsx/workbook/worksheet/cell_serializer.rb'
 require 'axlsx/workbook/worksheet/cell.rb'
 require 'axlsx/workbook/worksheet/page_margins.rb'
 require 'axlsx/workbook/worksheet/page_set_up_pr.rb'
-require 'axlsx/workbook/worksheet/outline_pr.rb'
 require 'axlsx/workbook/worksheet/page_setup.rb'
 require 'axlsx/workbook/worksheet/header_footer.rb'
 require 'axlsx/workbook/worksheet/print_options.rb'
@@ -40,6 +37,7 @@ require 'axlsx/workbook/worksheet/worksheet_hyperlinks'
 require 'axlsx/workbook/worksheet/break'
 require 'axlsx/workbook/worksheet/row_breaks'
 require 'axlsx/workbook/worksheet/col_breaks'
+require 'axlsx/workbook/worksheet/row_container'
 require 'axlsx/workbook/workbook_view'
 require 'axlsx/workbook/workbook_views'
 
@@ -95,15 +93,6 @@ require 'axlsx/workbook/worksheet/selection.rb'
     def use_shared_strings=(v)
       Axlsx::validate_boolean(v)
       @use_shared_strings = v
-    end
-
-    # If true reverse the order in which the workbook is serialized
-    # @return [Boolean]
-    attr_reader :is_reversed
-
-    def is_reversed=(v)
-      Axlsx::validate_boolean(v)
-      @is_reversed = v
     end
 
 
@@ -280,10 +269,6 @@ require 'axlsx/workbook/worksheet/selection.rb'
       worksheet
     end
 
-    # Adds a new WorkbookView
-    # @return WorkbookViews
-    # @option options [Hash] options passed into the added WorkbookView
-    # @see WorkbookView#initialize
     def add_view(options={})
       views << WorkbookView.new(options)
     end
@@ -308,7 +293,7 @@ require 'axlsx/workbook/worksheet/selection.rb'
       end
       r << Relationship.new(self, STYLES_R,  STYLES_PN)
       if use_shared_strings
-          r << Relationship.new(self, SHARED_STRINGS_R, SHARED_STRINGS_PN)
+          r << Relationship.new(self, SHARED_STRINGS_R,  SHARED_STRINGS_PN)
       end
       r
     end
@@ -354,21 +339,17 @@ require 'axlsx/workbook/worksheet/selection.rb'
     def to_xml_string(str='')
       add_worksheet(name: 'Sheet1') unless worksheets.size > 0
       str << '<?xml version="1.0" encoding="UTF-8"?>'
-      str << ('<workbook xmlns="' << XML_NS << '" xmlns:r="' << XML_NS_R << '">')
-      str << ('<workbookPr date1904="' << @@date1904.to_s << '"/>')
+      str << '<workbook xmlns="' << XML_NS << '" xmlns:r="' << XML_NS_R << '">'
+      str << '<workbookPr date1904="' << @@date1904.to_s << '"/>'
       views.to_xml_string(str)
       str << '<sheets>'
-      if is_reversed
-        worksheets.reverse_each { |sheet| sheet.to_sheet_node_xml_string(str) }
-      else
-        worksheets.each { |sheet| sheet.to_sheet_node_xml_string(str) }
-      end
+      worksheets.each { |sheet| sheet.to_sheet_node_xml_string(str) }
       str << '</sheets>'
       defined_names.to_xml_string(str)
       unless pivot_tables.empty?
         str << '<pivotCaches>'
         pivot_tables.each do |pivot_table|
-          str << ('<pivotCache cacheId="' << pivot_table.cache_definition.cache_id.to_s << '" r:id="' << pivot_table.cache_definition.rId << '"/>')
+          str << '<pivotCache cacheId="' << pivot_table.cache_definition.cache_id.to_s << '" r:id="' << pivot_table.cache_definition.rId << '"/>'
         end
         str << '</pivotCaches>'
       end

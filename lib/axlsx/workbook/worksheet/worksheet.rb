@@ -7,7 +7,11 @@ module Axlsx
     include Axlsx::SerializedAttributes
     # definition of characters which are less than the maximum width of 0-9 in the default font for use in String#count.
     # This is used for autowidth calculations
-    THIN_CHARS = '^.acfijklrstxzFIJL()-'.freeze
+    # @return [String]
+    def self.thin_chars
+      # removed 'e' and 'y' from this list - as a GUESS
+      @thin_chars ||= "^.acfijklrstxzFIJL()-"
+    end
 
     # Creates a new worksheet.
     # @note the recommended way to manage worksheets is Workbook#add_worksheet
@@ -24,10 +28,11 @@ module Axlsx
       parse_options options
       @workbook.worksheets << self
       @sheet_id = index + 1
+      @row_enumerator = false
       yield self if block_given?
     end
 
-    serializable_attributes :sheet_id, :state
+    serializable_attributes :sheet_id, :name, :state
 
     # Initalizes page margin, setup and print options
     # @param [Hash] options Options passed in from the initializer
@@ -43,7 +48,7 @@ module Axlsx
     # The name of the worksheet
     # @return [String]
     def name
-      @name ||= "Sheet" + (index+1).to_s
+      @name ||=  "Sheet" + (index+1).to_s
     end
 
     # Specifies the visible state of this sheet. Allowed states are
@@ -53,7 +58,7 @@ module Axlsx
     # :very_hidden sheets should be inaccessible to end users.
     # @param [Symbol] sheet_state The visible state for this sheet.
     def state=(sheet_state)
-      RestrictionValidator.validate :worksheet_state, [:visible, :hidden, :very_hidden], sheet_state
+      RestrictionValidator.validate "Worksheet#state", [:visible, :hidden, :very_hidden], sheet_state
       @state = sheet_state
     end
 
@@ -91,7 +96,7 @@ module Axlsx
     # @see [SheetFormatPr]
     def sheet_format_pr
       @sheet_format_pr ||= SheetFormatPr.new
-      yield @sheet_format_pr if block_given?
+      yeild @sheet_format_pr if block_given?
       @sheet_format_pr
     end
 
@@ -144,7 +149,11 @@ module Axlsx
     # @return [SimpleTypedList]
     # @see Worksheet#add_row
     def rows
-      @rows ||= SimpleTypedList.new Row
+      @rows ||= if Axlsx.lazy_row_fetching
+        RowContainer.new @row_enumerator
+      else
+        SimpleTypedList.new Row
+      end
     end
 
     # returns the sheet data as columns
@@ -152,7 +161,7 @@ module Axlsx
     # cell at a specific index. The block will be called with the row and column
     # index in the missing cell was found.
     # @example
-    #     cols { |row_index, column_index| puts "warn - row #{row_index} does not have a cell at #{column_index}" }
+    #     cols { |row_index, column_index| p "warn - row #{row_index} is does not have a cell at #{column_index}
     def cols(&block)
       @rows.transpose(&block)
     end
@@ -264,7 +273,7 @@ module Axlsx
       @header_footer
     end
 
-    # convenience method to access all cells in this worksheet
+    # convinience method to access all cells in this worksheet
     # @return [Array] cells
     def cells
       rows.flatten
@@ -305,6 +314,50 @@ module Axlsx
       @sheet_pr ||= SheetPr.new self
     end
 
+    # Indicates if gridlines should be shown in the sheet.
+    # This is true by default.
+    # @return [Boolean]
+    # @deprecated Use SheetView#show_grid_lines= instead.
+    def show_gridlines=(v)
+      warn('axlsx::DEPRECIATED: Worksheet#show_gridlines= has been depreciated. This value can be set over SheetView#show_grid_lines=.')
+      Axlsx::validate_boolean v
+      sheet_view.show_grid_lines = v
+    end
+
+    # @see selected
+    # @return [Boolean]
+    # @deprecated Use SheetView#tab_selected= instead.
+    def selected=(v)
+      warn('axlsx::DEPRECIATED: Worksheet#selected= has been depreciated. This value can be set over SheetView#tab_selected=.')
+      Axlsx::validate_boolean v
+      sheet_view.tab_selected = v
+    end
+
+    # Indicates if the worksheet should show gridlines or not
+    # @return Boolean
+    # @deprecated Use SheetView#show_grid_lines instead.
+    def show_gridlines
+      warn('axlsx::DEPRECIATED: Worksheet#show_gridlines has been depreciated. This value can get over SheetView#show_grid_lines.')
+      sheet_view.show_grid_lines
+    end
+
+    # Indicates if the worksheet is selected in the workbook
+    # It is possible to have more than one worksheet selected, however it might cause issues
+    # in some older versions of excel when using copy and paste.
+    # @return Boolean
+    # @deprecated Use SheetView#tab_selected instead.
+    def selected
+      warn('axlsx::DEPRECIATED: Worksheet#selected has been depreciated. This value can get over SheetView#tab_selected.')
+      sheet_view.tab_selected
+    end
+
+    # (see #fit_to_page)
+    # @return [Boolean]
+    def fit_to_page=(v)
+      warn('axlsx::DEPRECIATED: Worksheet#fit_to_page has been depreciated. This value will automatically be set for you when you use PageSetup#fit_to.')
+      fit_to_page?
+    end
+
     # The name of the worksheet
     # The name of a worksheet must be unique in the workbook, and must not exceed 31 characters
     # @param [String] name
@@ -317,8 +370,9 @@ module Axlsx
     # @param [String] v
     # @see auto_filter
     def auto_filter=(v)
-      DataTypeValidator.validate :worksheet_auto_filter, String, v
+      DataTypeValidator.validate "Worksheet.auto_filter", String, v
       auto_filter.range = v
+      workbook.add_defined_name auto_filter.defined_name, name: '_xlnm.FilterDatabase', local_sheet_id: index, hidden: 1
     end
 
     # Accessor for controlling whether leading and trailing spaces in cells are
@@ -398,13 +452,18 @@ module Axlsx
     # @option options [Array] widths each member of the widths array will affect how auto_fit behavies.
     # @option options [Float] height the row's height (in points)
     def add_row(values=[], options={})
-      row = Row.new(self, values, options)
-      update_column_info row, options.delete(:widths)
-      yield row if block_given?
-      row
+      Row.new(self, values, options)
+      update_column_info @rows.last.cells, options.delete(:widths) || []
+      yield @rows.last if block_given?
+      @rows.last
     end
 
     alias :<< :add_row
+
+    # Allows you to pass in an enumerator that adds rows which will lazily fetch rows on render
+    def fetch_rows_with(enumerator)
+      @row_enumerator = enumerator
+    end
 
     # Add conditional formatting to this worksheet.
     #
@@ -493,7 +552,7 @@ module Axlsx
     # @example
     #   ws.add_page_break("A4")
     def add_page_break(cell)
-      DataTypeValidator.validate :worksheet_page_break, [String, Cell], cell
+      DataTypeValidator.validate "Worksheet#add_page_break cell", [String, Cell], cell
       column_index, row_index = if cell.is_a?(String)
           Axlsx.name_to_indices(cell)
         else
@@ -511,7 +570,7 @@ module Axlsx
     # @example This would set the first and third column widhts but leave the second column in autofit state.
     #      ws.column_widths 7.2, nil, 3
     # @note For updating only a single column it is probably easier to just set the width of the ws.column_info[col_index].width directly
-    # @param [Integer|Float|nil] widths
+    # @param [Integer|Float|Fixnum|nil] widths
     def column_widths(*widths)
       widths.each_with_index do |value, index|
         next if value == nil
@@ -530,7 +589,7 @@ module Axlsx
     # @see README.md for an example
     def col_style(index, style, options={})
       offset = options.delete(:row_offset) || 0
-      cells = @rows[(offset..-1)].map { |row| row[index] }.flatten.compact
+      cells = @rows[(offset..-1)].map { |row| row.cells[index] }.flatten.compact
       cells.each { |cell| cell.style = style }
     end
 
@@ -550,25 +609,26 @@ module Axlsx
 
     # Returns a sheet node serialization for this sheet in the workbook.
     def to_sheet_node_xml_string(str='')
-      add_autofilter_defined_name_to_workbook
       str << '<sheet '
       serialized_attributes str
-      str << ('name="' << name << '" ')
-      str << ('r:id="' << rId << '"></sheet>')
+      str << "r:id='" << rId << "'"
+      str << '></sheet>'
     end
 
     # Serializes the worksheet object to an xml string
     # This intentionally does not use nokogiri for performance reasons
     # @return [String]
-    def to_xml_string str=''
-      add_autofilter_defined_name_to_workbook
+    def to_xml_string(str='')
       auto_filter.apply if auto_filter.range
       str << '<?xml version="1.0" encoding="UTF-8"?>'
       str << worksheet_node
+      serialized_sheet_data
       serializable_parts.each do |item|
         item.to_xml_string(str) if item
       end
       str << '</worksheet>'
+      # Cannot sanitize if it is an Enumerator
+      Axlsx::sanitize(str) if str.class == String
     end
 
     # The worksheet relationships. This is managed automatically by the worksheet
@@ -586,7 +646,7 @@ module Axlsx
     # Returns the cell or cells defined using excel style A1:B3 references.
     # @param [String|Integer] cell_def the string defining the cell or range of cells, or the rownumber
     # @return [Cell, Array]
-    def [](cell_def)
+    def [] (cell_def)
       return rows[cell_def] if cell_def.is_a?(Integer)
       parts = cell_def.split(':').map{ |part| name_to_cell part }
       if parts.size == 1
@@ -602,7 +662,7 @@ module Axlsx
     def name_to_cell(name)
       col_index, row_index = *Axlsx::name_to_indices(name)
       r = rows[row_index]
-      r[col_index] if r
+      r.cells[col_index] if r
     end
 
     # shortcut method to access styles direclty from the worksheet
@@ -655,7 +715,7 @@ module Axlsx
     end
 
     def validate_sheet_name(name)
-      DataTypeValidator.validate :worksheet_name, String, name
+      DataTypeValidator.validate "Worksheet.name", String, name
       raise ArgumentError, (ERR_SHEET_NAME_TOO_LONG % name) if name.size > 31
       raise ArgumentError, (ERR_SHEET_NAME_CHARACTER_FORBIDDEN % name) if '[]*/\?:'.chars.any? { |char| name.include? char }
       name = Axlsx::coder.encode(name)
@@ -675,8 +735,8 @@ module Axlsx
     def range(*cell_def)
       first, last = cell_def
       cells = []
-      rows[(first.row.row_index..last.row.row_index)].each do |r|
-        r[(first.index..last.index)].each do |c|
+      rows[(first.row.index..last.row.index)].each do |r|
+        r.cells[(first.index..last.index)].each do |c|
           cells << c
         end
       end
@@ -714,11 +774,15 @@ module Axlsx
     # Helper method for parsingout the root node for worksheet
     # @return [String]
     def worksheet_node
-      "<worksheet xmlns=\"#{XML_NS}\" xmlns:r=\"#{XML_NS_R}\" xml:space=\"#{xml_space}\">"
+       "<worksheet xmlns=\"%s\" xmlns:r=\"%s\" xml:space=\"#{xml_space}\">" % [XML_NS, XML_NS_R]
     end
 
     def sheet_data
       @sheet_data ||= SheetData.new self
+    end
+
+    def serialized_sheet_data
+      @serialized_sheet_data ||= sheet_data.to_xml_string
     end
 
     def worksheet_drawing
@@ -733,22 +797,16 @@ module Axlsx
 
     def workbook=(v) DataTypeValidator.validate "Worksheet.workbook", Workbook, v; @workbook = v; end
 
-    def update_column_info(cells, widths=nil)
+    def update_column_info(cells, widths=[])
       cells.each_with_index do |cell, index|
-        width = widths ? widths[index] : nil
         col = find_or_create_column_info(index)
-        next if width == :ignore
-        col.update_width(cell, width, workbook.use_autowidth)
+        next if widths[index] == :ignore
+        col.update_width(cell, widths[index], workbook.use_autowidth)
       end
     end
 
     def find_or_create_column_info(index)
       column_info[index] ||= Col.new(index + 1, index + 1)
-    end
-
-    def add_autofilter_defined_name_to_workbook
-      return if !auto_filter.range
-      workbook.add_defined_name auto_filter.defined_name, name: '_xlnm._FilterDatabase', local_sheet_id: index, hidden: 1
     end
 
   end

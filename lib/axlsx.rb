@@ -1,7 +1,6 @@
 # encoding: UTF-8
 require 'htmlentities'
 require 'axlsx/version.rb'
-require 'mimemagic'
 
 require 'axlsx/util/simple_typed_list.rb'
 require 'axlsx/util/constants.rb'
@@ -11,7 +10,10 @@ require 'axlsx/util/serialized_attributes'
 require 'axlsx/util/options_parser'
 # to be included with parsable intitites.
 #require 'axlsx/util/parser.rb'
-require 'axlsx/util/mime_type_utils'
+
+require 'axlsx/streaming/fake_io.rb'
+require 'axlsx/streaming/output_stream.rb'
+require 'axlsx/streaming/zip_body.rb'
 
 require 'axlsx/stylesheet/styles.rb'
 
@@ -55,7 +57,7 @@ module Axlsx
     cells = sort_cells(cells)
     reference = "#{cells.first.reference(absolute)}:#{cells.last.reference(absolute)}"
     if absolute
-      escaped_name = cells.first.row.worksheet.name.gsub '&apos;', "''"
+      escaped_name = cells.first.row.worksheet.name.gsub "&apos;", "''"
       "'#{escaped_name}'!#{reference}"
     else
       reference
@@ -67,7 +69,7 @@ module Axlsx
   # @param [Array] cells
   # @return [Array]
   def self.sort_cells(cells)
-    cells.sort { |x, y| [x.index, x.row.row_index] <=> [y.index, y.row.row_index] }
+    cells.sort { |x, y| [x.index, x.row.index] <=> [y.index, y.row.index] }
   end
 
   #global reference html entity encoding
@@ -90,21 +92,20 @@ module Axlsx
   # @note This follows the standard spreadsheet convention of naming columns A to Z, followed by AA to AZ etc.
   # @return [String]
   def self.col_ref(index)
-    chars = ''
+    chars = []
     while index >= 26 do
-      index, char = index.divmod(26)
-      chars.prepend((char + 65).chr)
-      index -= 1
+      chars << ((index % 26) + 65).chr
+      index = (index / 26).to_i - 1
     end
-    chars.prepend((index + 65).chr)
-    chars
+    chars << (index + 65).chr
+    chars.reverse.join
   end
 
   # @return [String] The alpha(column)numeric(row) reference for this sell.
   # @example Relative Cell Reference
   #   ws.rows.first.cells.first.r #=> "A1"
   def self.cell_r(c_index, r_index)
-    col_ref(c_index) << (r_index+1).to_s
+    Axlsx::col_ref(c_index).to_s << (r_index+1).to_s
   end
 
   # Creates an array of individual cell references based on an excel reference range.
@@ -116,7 +117,7 @@ module Axlsx
     end_col,   end_row   = name_to_indices($2)
     (start_row..end_row).to_a.map do |row_num|
       (start_col..end_col).to_a.map do |col_num|
-        cell_r(col_num, row_num)
+        "#{col_ref(col_num)}#{row_num+1}"
       end
     end
   end
@@ -130,30 +131,14 @@ module Axlsx
     s.gsub(/_(.)/){ $1.upcase }
   end
 
-  # returns the provided string with all invalid control charaters
-  # removed.
-  # @param [String] str The string to process
-  # @return [String]
-  def self.sanitize(str)
-    if str.frozen?
-      str.delete(CONTROL_CHARS)
-    else
-      str.delete!(CONTROL_CHARS)
-      str
+    # returns the provided string with all invalid control charaters
+    # removed.
+    # @param [String] str The sting to process
+    # @return [String]
+    def self.sanitize(str)
+      str.gsub(CONTROL_CHAR_REGEX, '')
     end
-  end
 
-  # If value is boolean return 1 or 0
-  # else return the value
-  # @param [Object] value The value to process
-  # @return [Object]
-  def self.booleanize(value)
-    if value == true || value == false
-      value ? 1 : 0
-    else
-      value
-    end
-  end
 
   # Instructs the serializer to not try to escape cell value input.
   # This will give you a huge speed bonus, but if you content has <, > or other xml character data
@@ -168,4 +153,17 @@ module Axlsx
   def self.trust_input=(trust_me)
     @trust_input = trust_me
   end
+
+  # Allows lazy fetching of worksheet rows at render time
+  def self.lazy_row_fetching
+    @lazy_row_fetching ||= false
+  end
+
+  # @param[Boolean] streaming_body A boolean value indicating if lazy row fetching is enabled
+  # @return [Boolean]
+  # @see Axlsx::lazy_row_fetching
+  def self.lazy_row_fetching=(lazy_row_fetching)
+    @lazy_row_fetching = lazy_row_fetching
+  end
+
 end
